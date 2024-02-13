@@ -178,6 +178,56 @@ void configureUART()
     uart_driver_install(UART_NUM_1, BUF_SIZE * 2, 0, 0, NULL, 0);
 }
 
+void IRAM_ATTR button_isr_handler(void* arg) {
+    uint32_t gpio_num = (uint32_t) arg;
+    
+    // Xử lý ngắt cho cảm biến KY_026 khi phát hiện có hồng ngoại ngọn lửa
+    if (gpio_num == KY026_PIN) 
+    {
+        printf("KY_026 Status is 0\n");
+        if (DHT11_Read().Temperature > 50)
+        {
+            // Đặt số điện thoại đích, gửi tin nhắn và rung còi báo động
+            sendATCommand("AT+CMGS=\"+84852517099\"\r\n");
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            sendATCommand("Nha cua ban dang co chay!\x1A\r\n"); 
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            printf("Nha cua ban dang co chay!\n");
+            gpio_set_level(BUZZER_PIN, 1);
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            gpio_set_level(BUZZER_PIN, 0);
+        }
+    } 
+    
+    // Xử lý ngắt cho cảm biến FC-37 khi phát hiện có giọt nước rơi trên cảm biến
+    else if (gpio_num == FC37_PIN) 
+    {
+        printf("FC-37 Status is 0\n");
+        if (DHT11_Read().Humidity > 80)
+        {
+            // Motor kéo về, đóng cửa sổ
+            gpio_set_level(MOTOR_IN1, 0);
+            gpio_set_level(MOTOR_IN2, 1);
+            vTaskDelay(5000 / portTICK_PERIOD_MS);
+        }
+    }
+
+    // Xử lý ngắt cho trường hợp còn lại là cảm biến PIR khi phát hiện có người lạ đột nhập
+    else 
+    {
+        printf("PIR Status is 1\n");
+        // Đặt số điện thoại đích, gửi tin nhắn và rung còi báo động
+        sendATCommand("AT+CMGS=\"+84852517099\"\r\n");
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        sendATCommand("Nha cua ban dang co trom!\x1A\r\n"); 
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        printf("Nha cua ban dang co trom!\n");
+        gpio_set_level(BUZZER_PIN, 1);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        gpio_set_level(BUZZER_PIN, 0);
+    }
+}
+
 void app_main(void)
 {
     // Bắt đầu thiết lập I/O, UART
@@ -206,6 +256,31 @@ void app_main(void)
     Gpio_config.intr_type = GPIO_INTR_DISABLE; 
     gpio_config(&Gpio_config);
 
+    // Ngắt ngoài cho cảm biến KY026, tích cực mức thấp
+    Gpio_config.intr_type = GPIO_INTR_NEGEDGE;
+    Gpio_config.pin_bit_mask = (1ULL << KY026_PIN);
+    Gpio_config.mode = GPIO_MODE_INPUT;
+    Gpio_config.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&Gpio_config);
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(KY026_PIN, button_isr_handler, (void*) KY026_PIN);
+
+    // Ngắt ngoài cho cảm biến FC-37, tích cực mức thấp
+    Gpio_config.intr_type = GPIO_INTR_NEGEDGE;
+    Gpio_config.pin_bit_mask = (1ULL << FC37_PIN);
+    Gpio_config.mode = GPIO_MODE_INPUT;
+    Gpio_config.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&Gpio_config);
+    gpio_isr_handler_add(FC37_PIN, button_isr_handler, (void*) FC37_PIN);
+
+    // Ngắt ngoài cho cảm biến PIR, tích cực mức cao
+    Gpio_config.intr_type = GPIO_INTR_POSEDGE;
+    Gpio_config.pin_bit_mask = (1ULL << PIR_PIN);
+    Gpio_config.mode = GPIO_MODE_INPUT;
+    Gpio_config.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_config(&Gpio_config);
+    gpio_isr_handler_add(PIR_PIN, button_isr_handler, (void*) PIR_PIN);
+
     uint8_t KY026_Status = 0;
     uint8_t FC37_Status = 0;
     uint8_t PIR_Status = 0;
@@ -218,60 +293,23 @@ void app_main(void)
     printf("Status code is %d\n", DHT11_Read().Status);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     
-    // Đọc cảm biến lửa, nếu có lửa thì KY026_Status = 0
+    // Đọc trạng thái cảm biến KY_026
     KY026_Status = gpio_get_level(KY026_PIN);
-    printf("KY_026 Status is %d\n", KY026_PIN);
-    if ((KY026_Status == 0) && (DHT11_Read().Temperature > 50))
-    {
-    // Đặt số điện thoại đích và gửi tin nhắn
-    sendATCommand("AT+CMGS=\"+84852517099\"\r\n");
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    sendATCommand("Nha cua ban dang co chay!\x1A\r\n"); // Gửi tin nhắn
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    printf("Nha cua ban dang co chay!\n");
-    gpio_set_level(BUZZER_PIN, 1);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    gpio_set_level(BUZZER_PIN, 0);
-    }
+    printf("KY_026 Status is %d\n", KY026_Status);
 
-    // Đọc PIR, nếu có người thì PIR_Status = 1
+    // Đọc trạng thái cảm biến PIR
     PIR_Status = gpio_get_level(PIR_PIN);
-    printf("PIR Status is %d\n", PIR_PIN);
-    if (PIR_Status)
-    {
-    // Đặt số điện thoại đích và gửi tin nhắn
-    sendATCommand("AT+CMGS=\"+84852517099\"\r\n");
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    sendATCommand("Nha cua ban dang co trom!\x1A\r\n"); // Gửi tin nhắn
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    printf("Nha cua ban dang co trom!\n");
-    gpio_set_level(BUZZER_PIN, 1);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    gpio_set_level(BUZZER_PIN, 0);
-    }
-
-    // Đọc cảm biến giọt nước FC-37, nếu có nước thì FC-37 Status = 0
+    printf("PIR Status is %d\n", PIR_Status);
+    
+    // Đọc trạng thái cảm biến giọt nước FC-37
     FC37_Status = gpio_get_level(FC37_PIN);
     printf("FC37 Status is %d\n\n", FC37_Status);
-    if ((FC37_Status == 0) && (DHT11_Read().Humidity > 80))
-    {
-        // Motor kéo về, đóng cửa sổ
-        gpio_set_level(MOTOR_IN1, 0);
-        gpio_set_level(MOTOR_IN2, 1);
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
-    }
-    else 
-    {
     if (FC37_Status == 1 && DHT11_Read().Humidity < 60) 
     {
-        // Motor đẩy ra, mở cửa sổ
+        // Ở trạng thái bình thường khi không có mưa, Motor sẽ ở trạng thái đẩy ra, giữ cửa sổ mở
         gpio_set_level(MOTOR_IN1, 1);
         gpio_set_level(MOTOR_IN2, 0);
         vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
     }
 }
-    
-}
-
-
